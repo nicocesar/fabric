@@ -5,6 +5,7 @@ Internal shared-state variables such as config settings and host lists.
 import os
 import sys
 from optparse import make_option
+from collections import defaultdict
 
 from fabric.network import HostConnectionCache
 from fabric.version import get_version
@@ -295,6 +296,7 @@ env = _AttributeDict({
     # later detection (thus %s -- gets filled with env.sudo_prompt at runtime)
     'sudo_prefix': "sudo -S -p '%s' ",
     'sudo_prompt': 'sudo password:',
+    'use_exceptions_for': {'network': False},
     'use_shell': True,
     'user': None,
     'version': get_version('short')

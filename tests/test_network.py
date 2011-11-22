@@ -6,7 +6,7 @@ import getpass
 import sys
 
 import ssh
-from nose.tools import with_setup, ok_
+from nose.tools import with_setup, ok_, raises
 from fudge import (Fake, clear_calls, clear_expectations, patch_object, verify,
     with_patched_object, patched_context, with_fakes)
 
@@ -17,6 +17,7 @@ from fabric.io import output_loop
 import fabric.network  # So I can call patch_object correctly. Sigh.
 from fabric.state import env, output, _get_system_username
 from fabric.operations import run, sudo, prompt
+from fabric.exceptions import NetworkException
 
 from utils import *
 from server import (server, PORT, RESPONSES, PASSWORDS, CLIENT_PRIVKEY, USER,
@@ -462,3 +463,24 @@ result1
 result2
 """ % {'prefix': env.host_string}
         eq_(expected[1:], sys.stdall.getvalue())
+
+
+class TestConnections(FabricTest):
+    @aborts
+    def test_should_abort_when_cannot_connect(self):
+        """
+        By default, connecting to a nonexistent server should abort.
+        """
+        with settings(show('everything'), host_string="nope.nonexistent.com"):
+            run("oh dear")
+
+    def test_should_warn_when_skip_bad_hosts_is_True(self):
+        """
+        env.skip_bad_hosts = True => run() warns, continues to next statement
+        """
+        with settings(
+            hide('everything'),
+            host_string="nope.nonexistent.com",
+            skip_bad_hosts=True
+        ):
+            run("well, at least we kept going")

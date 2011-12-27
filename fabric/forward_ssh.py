@@ -1,6 +1,6 @@
 import getpass
-import paramiko as ssh
-from paramiko.resource import ResourceManager
+import ssh ## ;) git clone https://github.com/bitprophet/ssh.git 
+from ssh.resource import ResourceManager
 
 class ForwardSSHClient(ssh.SSHClient):
     """

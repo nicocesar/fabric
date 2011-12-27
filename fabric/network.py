@@ -32,7 +32,6 @@ Please make sure all dependencies are installed and importable.
 host_pattern = r'((?P<user>.+)@)?(?P<host>[^:]+)(:(?P<port>\d+))?'
 host_regex = re.compile(host_pattern)
 
-
 class HostConnectionCache(dict):
     """
     Dict subclass allowing for caching of host connections/clients.
@@ -64,14 +63,32 @@ class HostConnectionCache(dict):
     two different connections to the same host being made. If no port is given,
     22 is assumed, so ``example.com`` is equivalent to ``example.com:22``.
     """
+    
+    def initialize_gateway(self):
+        """
+        Initializes the connection to the gateway, if a gateway is specified.
+        """
+        from fabric import state
+        gateway_key = state.env.get('gateway')
+        if not gateway_key is None and state.gateway_connection is None:
+            gateway_user, gateway_host, gateway_port = normalize(gateway_key)
+            # Normalize given key (i.e. obtain username and port, if not given)
+            state.gateway_connection = connect(gateway_user, gateway_host, gateway_port)
+            
     def __getitem__(self, key):
+        from fabric import state
+        self.initialize_gateway()
         # Normalize given key (i.e. obtain username and port, if not given)
         user, host, port = normalize(key)
         # Recombine for use as a key.
         real_key = join_host_strings(user, host, port)
         # If not found, create new connection and store it
         if real_key not in self:
-            self[real_key] = connect(user, host, port)
+            if state.gateway_connection is None:
+                self[real_key] = connect(user, host, port)
+            else:
+                self[real_key] = connect_forward(state.gateway_connection, host, port, user)
+                
         # Return the value either way
         return dict.__getitem__(self, real_key)
 
@@ -278,6 +295,56 @@ def connect(user, host, port):
                 host, e[1])
             )
 
+def connect_forward(gw, host, port, user):
+    """
+    Create a different connect that works with a gateway. We really need to
+    create the socket and destroy it when the connection fails and then retry
+    the connect.
+    """
+    from state import env
+    from forward_ssh import ForwardSSHClient
+    client = ForwardSSHClient()
+    while True:
+        # Load known host keys (e.g. ~/.ssh/known_hosts) unless user says not to.
+        if not env.disable_known_hosts:
+            client.load_system_host_keys()
+        # Unless user specified not to, accept/add new, unknown host keys
+        if not env.reject_unknown_hosts:
+            client.set_missing_host_key_policy(ssh.AutoAddPolicy())
+
+        sock = gw.get_transport().open_channel('direct-tcpip', (host, int(port)), ('', 0))
+        try:
+            client.connect(host, sock, int(port), user, env.password,
+                           key_filename=env.key_filename, timeout=10)
+            client._sock_ = sock
+            return client
+        except (
+            ssh.AuthenticationException,
+            ssh.PasswordRequiredException,
+            ssh.SSHException
+        ), e:
+            if e.__class__ is ssh.SSHException and env.password:
+                abort(str(e))
+
+            env.password = prompt_for_password(env.password)
+            sock.close()
+
+        except (EOFError, TypeError):
+            # Print a newline (in case user was sitting at prompt)
+            print('')
+            sys.exit(0)
+        # Handle timeouts
+        except socket.timeout:
+            abort('Timed out trying to connect to %s' % host)
+        # Handle DNS error / name lookup failure
+        except socket.gaierror:
+            abort('Name lookup failed for %s' % host)
+        # Handle generic network-related errors
+        # NOTE: In 2.6, socket.error subclasses IOError
+        except socket.error, e:
+            abort('Low level socket error connecting to host %s: %s' % (
+                host, e[1])
+            )
 
 def prompt_for_password(prompt=None, no_colon=False, stream=None):
     """
@@ -351,12 +418,19 @@ def disconnect_all():
     Used at the end of ``fab``'s main loop, and also intended for use by
     library users.
     """
-    from fabric.state import connections, output
+    from fabric.state import connections, output, gateway_connection
     # Explicitly disconnect from all servers
     for key in connections.keys():
         if output.status:
             print "Disconnecting from %s..." % denormalize(key),
         connections[key].close()
         del connections[key]
+        if output.status:
+            print "done."
+    if not gateway_connection is None:
+        if output.status:
+            print "Disconnecting from gateway...",
+        gateway_connection.close()
+        gateway_connection = None
         if output.status:
             print "done."
